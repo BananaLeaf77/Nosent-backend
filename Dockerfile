@@ -17,8 +17,6 @@ RUN apk add --no-cache ca-certificates sqlite-libs tzdata
 WORKDIR /app
 COPY --from=builder /app/server .
 
-# Persist uploads and WA session via Railway volume
-VOLUME ["/app/uploads", "/app/wa_session"]
 
 EXPOSE 8080
 CMD ["./server"]
