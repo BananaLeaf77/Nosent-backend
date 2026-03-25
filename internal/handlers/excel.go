@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
-	"github.com/yourorg/whatsapp-broadcast/internal/models"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
 )
 
 // headerMap maps common header variations to canonical field names

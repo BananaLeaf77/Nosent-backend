@@ -4,15 +4,15 @@ import (
 	"log"
 	"os"
 
+	"github.com/Nosent/whatsapp-broadcast/internal/handlers"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
+	"github.com/Nosent/whatsapp-broadcast/internal/scheduler"
+	"github.com/Nosent/whatsapp-broadcast/internal/storage"
+	"github.com/Nosent/whatsapp-broadcast/internal/whatsapp"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/joho/godotenv"
-	"github.com/yourorg/whatsapp-broadcast/internal/handlers"
-	"github.com/yourorg/whatsapp-broadcast/internal/models"
-	"github.com/yourorg/whatsapp-broadcast/internal/scheduler"
-	"github.com/yourorg/whatsapp-broadcast/internal/storage"
-	"github.com/yourorg/whatsapp-broadcast/internal/whatsapp"
 )
 
 func main() {

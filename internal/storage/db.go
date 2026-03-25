@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/yourorg/whatsapp-broadcast/internal/models"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

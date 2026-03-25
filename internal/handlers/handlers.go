@@ -8,10 +8,11 @@ import (
 
 	"log"
 
+	"github.com/Nosent/whatsapp-broadcast/internal/middleware"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
+	"github.com/Nosent/whatsapp-broadcast/internal/scheduler"
+	"github.com/Nosent/whatsapp-broadcast/internal/whatsapp"
 	"github.com/gofiber/fiber/v2"
-	"github.com/yourorg/whatsapp-broadcast/internal/models"
-	"github.com/yourorg/whatsapp-broadcast/internal/scheduler"
-	"github.com/yourorg/whatsapp-broadcast/internal/whatsapp"
 	"gorm.io/gorm"
 )
 
@@ -28,19 +29,26 @@ func New(db *gorm.DB, wa *whatsapp.Client, sched *scheduler.Scheduler) *Handler 
 func (h *Handler) RegisterRoutes(app *fiber.App) {
 	api := app.Group("/api")
 
-	// WhatsApp auth
-	api.Get("/wa/status", h.WAStatus)
-	api.Get("/wa/qr", h.WAQRCode)
-	api.Post("/wa/logout", h.WALogout)
-	api.Post("/wa/reconnect", h.WAReconnect)
+	// ── Public ──────────────────────────────────────────────────────
+	auth := NewAuthHandler(h.db)
+	api.Post("/auth/login", auth.Login)
+
+	// ── Protected (JWT required) ─────────────────────────────────────
+	protected := api.Group("", middleware.Auth())
+
+	// WhatsApp
+	protected.Get("/wa/status", h.WAStatus)
+	protected.Get("/wa/qr", h.WAQRCode)
+	protected.Post("/wa/logout", h.WALogout)
+	protected.Post("/wa/reconnect", h.WAReconnect)
 
 	// Broadcasts
-	api.Post("/broadcasts", h.CreateBroadcast)
-	api.Get("/broadcasts", h.ListBroadcasts)
-	api.Get("/broadcasts/:id", h.GetBroadcast)
-	api.Delete("/broadcasts/:id", h.CancelBroadcast)
-	api.Get("/broadcasts/:id/logs", h.GetLogs)
-	api.Get("/broadcasts/:id/download", h.DownloadExcel)
+	protected.Post("/broadcasts", h.CreateBroadcast)
+	protected.Get("/broadcasts", h.ListBroadcasts)
+	protected.Get("/broadcasts/:id", h.GetBroadcast)
+	protected.Delete("/broadcasts/:id", h.CancelBroadcast)
+	protected.Get("/broadcasts/:id/logs", h.GetLogs)
+	protected.Get("/broadcasts/:id/download", h.DownloadExcel)
 }
 
 // ─── WhatsApp ───────────────────────────────────────────────────────────────
@@ -96,7 +104,6 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid form data")
 	}
 
-	// Validate
 	if req.Name == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "name is required")
 	}
@@ -104,7 +111,6 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "message_tpl is required")
 	}
 
-	// Handle file upload
 	file, err := c.FormFile("excel")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "excel file is required")
@@ -115,7 +121,6 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "only .xlsx or .xls files allowed")
 	}
 
-	// Save file
 	uploadDir := "./uploads"
 	os.MkdirAll(uploadDir, 0755)
 	filename := fmt.Sprintf("%d_%s", time.Now().UnixMilli(), file.Filename)
@@ -124,7 +129,6 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
 	}
 
-	// Build broadcast record
 	broadcast := models.Broadcast{
 		Name:         req.Name,
 		ExcelPath:    savePath,
@@ -155,13 +159,11 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "schedule_type must be 'once' or 'recurring'")
 	}
 
-	// Save to DB first to get ID
 	if err := h.db.Create(&broadcast).Error; err != nil {
 		os.Remove(savePath)
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to save broadcast")
 	}
 
-	// Parse Excel and save patients
 	patients, err := ParseExcel(savePath, broadcast.ID)
 	if err != nil {
 		h.db.Delete(&broadcast)
@@ -182,7 +184,6 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 
 	h.db.Model(&broadcast).Update("total_count", len(patients))
 
-	// Register with scheduler
 	switch broadcast.ScheduleType {
 	case models.ScheduleOnce:
 		if err := h.sched.ScheduleOnce(&broadcast); err != nil {

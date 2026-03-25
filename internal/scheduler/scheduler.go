@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"github.com/yourorg/whatsapp-broadcast/internal/models"
-	"github.com/yourorg/whatsapp-broadcast/internal/whatsapp"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
+	"github.com/Nosent/whatsapp-broadcast/internal/whatsapp"
 	"gorm.io/gorm"
 )
 
