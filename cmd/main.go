@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -79,5 +80,6 @@ func getAllowedOrigins() string {
 	if origin == "" {
 		return "http://localhost:3000,http://localhost:5173"
 	}
+	fmt.Printf("Allowed Origin = %s\n", origin)
 	return origin
 }
