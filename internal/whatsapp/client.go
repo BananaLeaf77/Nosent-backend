@@ -10,7 +10,7 @@ import (
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -26,8 +26,6 @@ const (
 	StatusWaitingQR    Status = "waiting_qr"
 	StatusConnected    Status = "connected"
 
-	// qrTimeout is how long we wait for the user to scan before giving up.
-	// WhatsApp issues a new QR code every ~20s; we allow up to 10 rounds (≈3 min).
 	qrTimeout = 3 * time.Minute
 )
 
@@ -37,7 +35,7 @@ type Client struct {
 	db       *gorm.DB
 	status   Status
 	qrChan   chan string
-	qrCode   string // latest QR as raw string
+	qrCode   string
 }
 
 func NewClient(db *gorm.DB) *Client {
@@ -48,7 +46,6 @@ func NewClient(db *gorm.DB) *Client {
 	}
 }
 
-// Connect initialises the whatsmeow client and restores session if available.
 func (c *Client) Connect() error {
 	ctx := context.Background()
 	dbAddress := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nosent?sslmode=disable")
@@ -69,8 +66,6 @@ func (c *Client) Connect() error {
 	c.waClient.AddEventHandler(c.handleEvent)
 
 	if c.waClient.Store.ID == nil {
-		// New device — need QR scan.
-		// Use a long-lived context so the QR channel stays open for qrTimeout.
 		qrCtx, qrCancel := context.WithTimeout(ctx, qrTimeout)
 
 		qrChan, _ := c.waClient.GetQRChannel(qrCtx)
@@ -85,7 +80,6 @@ func (c *Client) Connect() error {
 			for evt := range qrChan {
 				switch evt.Event {
 				case "code":
-					// New QR code issued — store it so the frontend can poll it.
 					c.mu.Lock()
 					c.qrCode = evt.Code
 					c.mu.Unlock()
@@ -94,16 +88,13 @@ func (c *Client) Connect() error {
 					default:
 					}
 				case "success":
-					// Scanned successfully; handleEvent will set StatusConnected.
+					// handleEvent will set StatusConnected
 				case "timeout":
-					// WhatsApp stopped issuing QR codes — stay in waiting_qr so
-					// the user can trigger a reconnect from the UI.
 					c.setStatus(StatusDisconnected)
 				}
 			}
 		}()
 	} else {
-		// Existing session — restore it directly.
 		if err := c.waClient.Connect(); err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
@@ -113,21 +104,19 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// GetQRCode returns the current QR code string (for frontend polling).
 func (c *Client) GetQRCode() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.qrCode
 }
 
-// GetStatus returns current connection status.
 func (c *Client) GetStatus() Status {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.status
 }
 
-// SendMessage sends a text message to a phone number like "6281234567890".
+// SendMessage sends a plain-text WhatsApp message to a number like "6281234567890".
 func (c *Client) SendMessage(phone, message string) error {
 	if c.GetStatus() != StatusConnected {
 		return fmt.Errorf("whatsapp not connected")
@@ -138,7 +127,7 @@ func (c *Client) SendMessage(phone, message string) error {
 		return fmt.Errorf("invalid phone %s: %w", phone, err)
 	}
 
-	msg := &waProto.Message{
+	msg := &waE2E.Message{
 		Conversation: proto.String(message),
 	}
 
@@ -149,7 +138,6 @@ func (c *Client) SendMessage(phone, message string) error {
 	return err
 }
 
-// Logout disconnects and clears the session.
 func (c *Client) Logout() error {
 	if c.waClient == nil {
 		return nil
