@@ -116,7 +116,8 @@ func (c *Client) GetStatus() Status {
 	return c.status
 }
 
-// SendMessage sends a plain-text WhatsApp message to a number like "6281234567890".
+// SendMessage sends a reliable WhatsApp message to a number like "6281234567890".
+// Uses ExtendedTextMessage and forces device synchronization to prevent iOS single-tick issues.
 func (c *Client) SendMessage(phone, message string) error {
 	if c.GetStatus() != StatusConnected {
 		return fmt.Errorf("whatsapp not connected")
@@ -127,12 +128,22 @@ func (c *Client) SendMessage(phone, message string) error {
 		return fmt.Errorf("invalid phone %s: %w", phone, err)
 	}
 
-	msg := &waE2E.Message{
-		Conversation: proto.String(message),
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// Force device synchronization to ensure encryption keys are updated
+	// This helps mitigate the single-checkmark issue observed on iOS devices.
+	_ = c.waClient.SendPresence(ctx, types.PresenceAvailable)
+	// We also subscribe to their presence to ensure the device wakes up to receive our message.
+	_ = c.waClient.SubscribePresence(ctx, jid)
+
+	// Use ExtendedTextMessage instead of plain Conversation.
+	// Modern iOS devices process this more reliably than raw text.
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(message),
+		},
+	}
 
 	_, err = c.waClient.SendMessage(ctx, jid, msg)
 	return err
