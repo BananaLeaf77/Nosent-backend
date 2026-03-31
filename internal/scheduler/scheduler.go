@@ -18,14 +18,14 @@ type Scheduler struct {
 	mu      sync.Mutex
 	cron    *cron.Cron
 	db      *gorm.DB
-	wa      *whatsapp.Client
+	wa      *whatsapp.Manager
 	entries map[uint]cron.EntryID // broadcastID -> cron entry
 }
 
-func New(db *gorm.DB, wa *whatsapp.Client) *Scheduler {
+func New(db *gorm.DB, waManager *whatsapp.Manager) *Scheduler {
 	return &Scheduler{
 		db:      db,
-		wa:      wa,
+		wa:      waManager,
 		cron:    cron.New(cron.WithSeconds()),
 		entries: make(map[uint]cron.EntryID),
 	}
@@ -106,6 +106,16 @@ func (s *Scheduler) executeBroadcast(broadcastID uint) {
 		return
 	}
 
+	// "1 user -> 1 WhatsApp session": pick the correct client for this broadcast owner.
+	client := s.wa.GetClient(b.OwnerUsername)
+	_ = client.EnsureConnected()
+
+	// Give a short window for the user to scan QR (if needed).
+	deadline := time.Now().Add(2 * time.Minute)
+	for client.GetStatus() != whatsapp.StatusConnected && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+	}
+
 	var patients []models.Patient
 	if err := s.db.Where("broadcast_id = ?", broadcastID).Find(&patients).Error; err != nil {
 		log.Printf("[scheduler] load patients failed: %v", err)
@@ -122,7 +132,7 @@ func (s *Scheduler) executeBroadcast(broadcastID uint) {
 
 	for _, p := range patients {
 		msg := buildMessage(b.MessageTpl, &p)
-		err := s.wa.SendMessage(p.Phone, msg)
+		err := client.SendMessage(p.Phone, msg)
 
 		logEntry := models.MessageLog{
 			BroadcastID: broadcastID,

@@ -29,20 +29,18 @@ func main() {
 	// Auto-migrate tables
 	if err := db.AutoMigrate(
 		&models.Broadcast{},
+		&models.WhatsAppSession{},
 		&models.Patient{},
 		&models.MessageLog{},
 	); err != nil {
 		log.Fatalf("Migration failed: %v", err)
 	}
 
-	// Init WhatsApp client
-	waClient := whatsapp.NewClient(db)
-	if err := waClient.Connect(); err != nil {
-		log.Printf("WhatsApp connect warning: %v", err)
-	}
+	// Init WhatsApp manager (one whatsapp session per app user)
+	waManager := whatsapp.NewManager(db)
 
 	// Init scheduler
-	sched := scheduler.New(db, waClient)
+	sched := scheduler.New(db, waManager)
 	sched.Start()
 	defer sched.Stop()
 
@@ -62,7 +60,7 @@ func main() {
 	app.Static("/uploads", "./uploads")
 
 	// Register routes
-	h := handlers.New(db, waClient, sched)
+	h := handlers.New(db, waManager, sched)
 	h.RegisterRoutes(app)
 
 	port := os.Getenv("PORT")

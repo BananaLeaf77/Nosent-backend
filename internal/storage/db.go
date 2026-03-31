@@ -53,22 +53,38 @@ func Connect() (*gorm.DB, error) {
 	adminUser := os.Getenv("ADMIN")
 	adminPass := os.Getenv("ADMIN_PASSWORD")
 
-	if adminUser != "" && adminPass != "" {
+	admin2User := os.Getenv("ADMIN2")
+	admin2Pass := os.Getenv("ADMIN2_PASSWORD")
+
+	type adminPair struct {
+		username string
+		password string
+	}
+
+	admins := []adminPair{
+		{username: adminUser, password: adminPass},
+		{username: admin2User, password: admin2Pass},
+	}
+
+	for _, ap := range admins {
+		if ap.username == "" || ap.password == "" {
+			continue
+		}
+
 		var admin models.Admin
-		if err := db.Where("username = ?", adminUser).First(&admin).Error; err != nil {
+		if err := db.Where("username = ?", ap.username).First(&admin).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				log.Printf("Creating default admin from environment...")
-				hashed, err := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
-				if err == nil {
-					db.Create(&models.Admin{
-						Username: adminUser,
+				log.Printf("Creating default admin %s from environment...", ap.username)
+				hashed, hashErr := bcrypt.GenerateFromPassword([]byte(ap.password), bcrypt.DefaultCost)
+				if hashErr == nil {
+					_ = db.Create(&models.Admin{
+						Username: ap.username,
 						Password: string(hashed),
-					})
+					}).Error
 				}
 			}
 		} else {
-			// If already exists, you can theoretically update password if it changes in env,
-			// but prompt says "if already exist skip"
+			// If already exists, skip (don't overwrite password).
 		}
 	}
 

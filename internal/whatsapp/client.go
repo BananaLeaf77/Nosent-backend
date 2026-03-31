@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -11,11 +12,13 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -30,19 +33,22 @@ const (
 )
 
 type Client struct {
-	mu       sync.RWMutex
-	waClient *whatsmeow.Client
-	db       *gorm.DB
-	status   Status
-	qrChan   chan string
-	qrCode   string
+	mu          sync.RWMutex
+	connectMu  sync.Mutex
+	waClient    *whatsmeow.Client
+	db          *gorm.DB
+	username    string
+	status      Status
+	qrChan      chan string
+	qrCode      string
 }
 
-func NewClient(db *gorm.DB) *Client {
+func NewClient(db *gorm.DB, username string) *Client {
 	return &Client{
-		db:     db,
-		status: StatusDisconnected,
-		qrChan: make(chan string, 1),
+		db:       db,
+		username: username,
+		status:   StatusDisconnected,
+		qrChan:   make(chan string, 1),
 	}
 }
 
@@ -56,9 +62,24 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("sqlstore: %w", err)
 	}
 
-	deviceStore, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		return fmt.Errorf("get device: %w", err)
+	deviceStore := (*store.Device)(nil)
+	// Load existing device for this app user (1 user -> 1 WhatsApp session).
+	if c.username != "" {
+		var sess models.WhatsAppSession
+		if err := c.db.Where("username = ?", c.username).First(&sess).Error; err == nil && sess.JID != "" {
+			jid, parseErr := types.ParseJID(sess.JID)
+			if parseErr == nil {
+				ds, getErr := container.GetDevice(ctx, jid)
+				if getErr != nil {
+					return fmt.Errorf("get device for %s: %w", c.username, getErr)
+				}
+				deviceStore = ds
+			}
+		}
+		// If no session exists (or parsing failed), fall back to a new device.
+	}
+	if deviceStore == nil {
+		deviceStore = container.NewDevice()
 	}
 
 	clientLog := waLog.Stdout("Client", "WARN", true)
@@ -89,6 +110,7 @@ func (c *Client) Connect() error {
 					}
 				case "success":
 					// handleEvent will set StatusConnected
+					// and persist this user's WhatsApp session JID.
 				case "timeout":
 					c.setStatus(StatusDisconnected)
 				}
@@ -99,9 +121,21 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("connect: %w", err)
 		}
 		c.setStatus(StatusConnected)
+		c.persistSession()
 	}
 
 	return nil
+}
+
+func (c *Client) EnsureConnected() error {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+
+	// If we're already connected (or waiting QR), don't spam connect.
+	if c.GetStatus() == StatusConnected || c.GetStatus() == StatusWaitingQR {
+		return nil
+	}
+	return c.Connect()
 }
 
 func (c *Client) GetQRCode() string {
@@ -114,6 +148,32 @@ func (c *Client) GetStatus() Status {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.status
+}
+
+func (c *Client) persistSession() {
+	if c.username == "" || c.waClient == nil || c.waClient.Store.ID == nil {
+		return
+	}
+
+	jidStr := c.waClient.Store.ID.String()
+	var sess models.WhatsAppSession
+	err := c.db.Where("username = ?", c.username).First(&sess).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			_ = c.db.Create(&models.WhatsAppSession{
+				Username: c.username,
+				JID:       jidStr,
+			}).Error
+			return
+		}
+		// Ignore persistence errors to avoid breaking message sending.
+		return
+	}
+
+	// Upsert
+	if sess.JID != jidStr {
+		_ = c.db.Model(&sess).Update("jid", jidStr).Error
+	}
 }
 
 // SendMessage sends a reliable WhatsApp message to a number like "6281234567890".
@@ -168,6 +228,7 @@ func (c *Client) handleEvent(evt interface{}) {
 	switch evt.(type) {
 	case *events.Connected:
 		c.setStatus(StatusConnected)
+		c.persistSession()
 	case *events.Disconnected:
 		c.setStatus(StatusDisconnected)
 	case *events.LoggedOut:

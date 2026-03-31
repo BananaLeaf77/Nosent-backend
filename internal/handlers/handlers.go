@@ -18,11 +18,11 @@ import (
 
 type Handler struct {
 	db    *gorm.DB
-	wa    *whatsapp.Client
+	wa    *whatsapp.Manager
 	sched *scheduler.Scheduler
 }
 
-func New(db *gorm.DB, wa *whatsapp.Client, sched *scheduler.Scheduler) *Handler {
+func New(db *gorm.DB, wa *whatsapp.Manager, sched *scheduler.Scheduler) *Handler {
 	return &Handler{db: db, wa: wa, sched: sched}
 }
 
@@ -54,25 +54,45 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 // ─── WhatsApp ───────────────────────────────────────────────────────────────
 
 func (h *Handler) WAStatus(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+	waClient := h.wa.GetClient(user)
+	_ = waClient.EnsureConnected()
 	return c.JSON(fiber.Map{
-		"status": h.wa.GetStatus(),
+		"status": waClient.GetStatus(),
 	})
 }
 
 func (h *Handler) WAQRCode(c *fiber.Ctx) error {
-	qr := h.wa.GetQRCode()
-	if qr == "" {
-		return c.JSON(fiber.Map{"qr": nil, "status": h.wa.GetStatus()})
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
 	}
-	return c.JSON(fiber.Map{"qr": qr, "status": h.wa.GetStatus()})
+
+	waClient := h.wa.GetClient(user)
+	_ = waClient.EnsureConnected()
+
+	qr := waClient.GetQRCode()
+	if qr == "" {
+		return c.JSON(fiber.Map{"qr": nil, "status": waClient.GetStatus()})
+	}
+	return c.JSON(fiber.Map{"qr": qr, "status": waClient.GetStatus()})
 }
 
 func (h *Handler) WAReconnect(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+
+	waClient := h.wa.GetClient(user)
 	go func() {
-		if h.wa.GetStatus() != whatsapp.StatusDisconnected {
-			_ = h.wa.Logout()
+		if waClient.GetStatus() != whatsapp.StatusDisconnected {
+			_ = waClient.Logout()
 		}
-		if err := h.wa.Connect(); err != nil {
+		if err := waClient.Connect(); err != nil {
 			log.Printf("[reconnect] Connect failed: %v", err)
 		}
 	}()
@@ -80,11 +100,17 @@ func (h *Handler) WAReconnect(c *fiber.Ctx) error {
 }
 
 func (h *Handler) WALogout(c *fiber.Ctx) error {
-	if err := h.wa.Logout(); err != nil {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+	waClient := h.wa.GetClient(user)
+
+	if err := waClient.Logout(); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	// Reconnect to show new QR
-	go h.wa.Connect()
+	go waClient.Connect()
 	return c.JSON(fiber.Map{"message": "logged out, reconnecting for new QR"})
 }
 
@@ -99,6 +125,11 @@ type CreateBroadcastRequest struct {
 }
 
 func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+
 	req := new(CreateBroadcastRequest)
 	if err := c.BodyParser(req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid form data")
@@ -135,6 +166,7 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 		ExcelName:    file.Filename,
 		MessageTpl:   req.MessageTpl,
 		ScheduleType: models.ScheduleType(req.ScheduleType),
+		OwnerUsername: user,
 		Status:       models.StatusPending,
 	}
 
@@ -211,8 +243,14 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 }
 
 func (h *Handler) ListBroadcasts(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+
 	var results []models.BroadcastSummary
 	h.db.Model(&models.Broadcast{}).
+		Where("owner_username = ?", user).
 		Select("id, name, excel_name, schedule_type, scheduled_at, cron_expr, status, total_count, sent_count, failed_count, last_sent_at, created_at").
 		Order("created_at DESC").
 		Scan(&results)
@@ -221,22 +259,30 @@ func (h *Handler) ListBroadcasts(c *fiber.Ctx) error {
 }
 
 func (h *Handler) GetBroadcast(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
 	id := c.Params("id")
 	var b models.Broadcast
-	if err := h.db.Preload("Patients").First(&b, id).Error; err != nil {
+	if err := h.db.Preload("Patients").Where("id = ? AND owner_username = ?", id, user).First(&b).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "broadcast not found")
 	}
 	return c.JSON(b)
 }
 
 func (h *Handler) CancelBroadcast(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
 	id, err := c.ParamsInt("id")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
 
 	var b models.Broadcast
-	if err := h.db.First(&b, id).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_username = ?", id, user).First(&b).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "broadcast not found")
 	}
 
@@ -247,16 +293,28 @@ func (h *Handler) CancelBroadcast(c *fiber.Ctx) error {
 }
 
 func (h *Handler) GetLogs(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
 	id := c.Params("id")
 	var logs []models.MessageLog
-	h.db.Where("broadcast_id = ?", id).Order("created_at DESC").Find(&logs)
+	h.db.Model(&models.MessageLog{}).
+		Joins("JOIN broadcasts ON broadcasts.id = message_logs.broadcast_id").
+		Where("broadcasts.id = ? AND broadcasts.owner_username = ?", id, user).
+		Order("message_logs.created_at DESC").
+		Find(&logs)
 	return c.JSON(logs)
 }
 
 func (h *Handler) DownloadExcel(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
 	id := c.Params("id")
 	var b models.Broadcast
-	if err := h.db.First(&b, id).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_username = ?", id, user).First(&b).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "broadcast not found")
 	}
 

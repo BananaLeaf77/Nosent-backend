@@ -35,6 +35,7 @@ type Broadcast struct {
 	ScheduleType ScheduleType    `json:"schedule_type" gorm:"not null"`
 	ScheduledAt  *time.Time      `json:"scheduled_at"`
 	CronExpr     string          `json:"cron_expr"`
+	OwnerUsername string         `json:"owner_username" gorm:"index"`
 	Status       BroadcastStatus `json:"status" gorm:"default:'pending'"`
 	TotalCount   int             `json:"total_count"`
 	SentCount    int             `json:"sent_count"`
@@ -43,6 +44,14 @@ type Broadcast struct {
 	CronID       int             `json:"cron_id" gorm:"-"`
 	Patients     []Patient       `json:"patients,omitempty" gorm:"foreignKey:BroadcastID"`
 	Logs         []MessageLog    `json:"logs,omitempty" gorm:"foreignKey:BroadcastID"`
+}
+
+// WhatsAppSession links an app account (Admin.Username) to a WhatsApp identity (JID).
+// We use this to keep "1 user -> 1 WhatsApp session" with whatsmeow's SQL store.
+type WhatsAppSession struct {
+	gorm.Model
+	Username string `gorm:"uniqueIndex;not null"`
+	JID       string `gorm:"not null"`
 }
 
 // Patient is one row from the uploaded Excel.
