@@ -39,6 +39,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	// WhatsApp
 	protected.Get("/wa/status", h.WAStatus)
 	protected.Get("/wa/qr", h.WAQRCode)
+	protected.Get("/wa/me", h.WAMe)
 	protected.Post("/wa/logout", h.WALogout)
 	protected.Post("/wa/reconnect", h.WAReconnect)
 
@@ -79,6 +80,22 @@ func (h *Handler) WAQRCode(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"qr": nil, "status": waClient.GetStatus()})
 	}
 	return c.JSON(fiber.Map{"qr": qr, "status": waClient.GetStatus()})
+}
+
+// WAMe returns the connected WhatsApp phone number (JID) for the logged-in user.
+func (h *Handler) WAMe(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+
+	waClient := h.wa.GetClient(user)
+	phone := waClient.GetPhone()
+
+	return c.JSON(fiber.Map{
+		"phone":    phone, // e.g. "6281234567890" or "" if not connected
+		"username": user,
+	})
 }
 
 func (h *Handler) WAReconnect(c *fiber.Ctx) error {
@@ -161,13 +178,13 @@ func (h *Handler) CreateBroadcast(c *fiber.Ctx) error {
 	}
 
 	broadcast := models.Broadcast{
-		Name:         req.Name,
-		ExcelPath:    savePath,
-		ExcelName:    file.Filename,
-		MessageTpl:   req.MessageTpl,
-		ScheduleType: models.ScheduleType(req.ScheduleType),
+		Name:          req.Name,
+		ExcelPath:     savePath,
+		ExcelName:     file.Filename,
+		MessageTpl:    req.MessageTpl,
+		ScheduleType:  models.ScheduleType(req.ScheduleType),
 		OwnerUsername: user,
-		Status:       models.StatusPending,
+		Status:        models.StatusPending,
 	}
 
 	switch req.ScheduleType {

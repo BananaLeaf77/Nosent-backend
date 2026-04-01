@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,14 +34,14 @@ const (
 )
 
 type Client struct {
-	mu          sync.RWMutex
+	mu         sync.RWMutex
 	connectMu  sync.Mutex
-	waClient    *whatsmeow.Client
-	db          *gorm.DB
-	username    string
-	status      Status
-	qrChan      chan string
-	qrCode      string
+	waClient   *whatsmeow.Client
+	db         *gorm.DB
+	username   string
+	status     Status
+	qrChan     chan string
+	qrCode     string
 }
 
 func NewClient(db *gorm.DB, username string) *Client {
@@ -63,7 +64,6 @@ func (c *Client) Connect() error {
 	}
 
 	deviceStore := (*store.Device)(nil)
-	// Load existing device for this app user (1 user -> 1 WhatsApp session).
 	if c.username != "" {
 		var sess models.WhatsAppSession
 		if err := c.db.Where("username = ?", c.username).First(&sess).Error; err == nil && sess.JID != "" {
@@ -76,7 +76,6 @@ func (c *Client) Connect() error {
 				deviceStore = ds
 			}
 		}
-		// If no session exists (or parsing failed), fall back to a new device.
 	}
 	if deviceStore == nil {
 		deviceStore = container.NewDevice()
@@ -110,7 +109,6 @@ func (c *Client) Connect() error {
 					}
 				case "success":
 					// handleEvent will set StatusConnected
-					// and persist this user's WhatsApp session JID.
 				case "timeout":
 					c.setStatus(StatusDisconnected)
 				}
@@ -131,7 +129,6 @@ func (c *Client) EnsureConnected() error {
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
 
-	// If we're already connected (or waiting QR), don't spam connect.
 	if c.GetStatus() == StatusConnected || c.GetStatus() == StatusWaitingQR {
 		return nil
 	}
@@ -150,6 +147,26 @@ func (c *Client) GetStatus() Status {
 	return c.status
 }
 
+// GetPhone returns the connected WhatsApp phone number in local format (e.g. "081234567890")
+// or the full JID user part (e.g. "6281234567890") if connected, empty string otherwise.
+func (c *Client) GetPhone() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.status != StatusConnected || c.waClient == nil || c.waClient.Store.ID == nil {
+		return ""
+	}
+
+	jid := c.waClient.Store.ID
+	// JID user part is the phone number e.g. "6281234567890"
+	phone := jid.User
+	// Strip the device suffix if present (e.g. "6281234567890:5")
+	if idx := strings.Index(phone, ":"); idx != -1 {
+		phone = phone[:idx]
+	}
+	return phone
+}
+
 func (c *Client) persistSession() {
 	if c.username == "" || c.waClient == nil || c.waClient.Store.ID == nil {
 		return
@@ -162,22 +179,19 @@ func (c *Client) persistSession() {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			_ = c.db.Create(&models.WhatsAppSession{
 				Username: c.username,
-				JID:       jidStr,
+				JID:      jidStr,
 			}).Error
 			return
 		}
-		// Ignore persistence errors to avoid breaking message sending.
 		return
 	}
 
-	// Upsert
 	if sess.JID != jidStr {
 		_ = c.db.Model(&sess).Update("jid", jidStr).Error
 	}
 }
 
 // SendMessage sends a reliable WhatsApp message to a number like "6281234567890".
-// Uses ExtendedTextMessage and forces device synchronization to prevent iOS single-tick issues.
 func (c *Client) SendMessage(phone, message string) error {
 	if c.GetStatus() != StatusConnected {
 		return fmt.Errorf("whatsapp not connected")
@@ -191,14 +205,9 @@ func (c *Client) SendMessage(phone, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Force device synchronization to ensure encryption keys are updated
-	// This helps mitigate the single-checkmark issue observed on iOS devices.
 	_ = c.waClient.SendPresence(ctx, types.PresenceAvailable)
-	// We also subscribe to their presence to ensure the device wakes up to receive our message.
 	_ = c.waClient.SubscribePresence(ctx, jid)
 
-	// Use ExtendedTextMessage instead of plain Conversation.
-	// Modern iOS devices process this more reliably than raw text.
 	msg := &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(message),
