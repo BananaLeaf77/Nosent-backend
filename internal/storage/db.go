@@ -14,6 +14,7 @@ import (
 )
 
 func Connect() (*gorm.DB, error) {
+	// FULL DB ADDRESS
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = fmt.Sprintf(
