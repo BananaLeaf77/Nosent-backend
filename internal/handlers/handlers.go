@@ -42,6 +42,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	protected.Get("/wa/me", h.WAMe)
 	protected.Post("/wa/logout", h.WALogout)
 	protected.Post("/wa/reconnect", h.WAReconnect)
+	protected.Post("/ping", h.WAPing)
 
 	// Broadcasts
 	protected.Post("/broadcasts", h.CreateBroadcast)
@@ -129,6 +130,42 @@ func (h *Handler) WALogout(c *fiber.Ctx) error {
 	// Reconnect to show new QR
 	go waClient.Connect()
 	return c.JSON(fiber.Map{"message": "logged out, reconnecting for new QR"})
+}
+
+type PingRequest struct {
+	Phone string `json:"phone" form:"phone"`
+}
+
+func (h *Handler) WAPing(c *fiber.Ctx) error {
+	user, _ := c.Locals("user").(string)
+	if user == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing user")
+	}
+
+	req := new(PingRequest)
+	if err := c.BodyParser(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request data")
+	}
+
+	if req.Phone == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "phone is required")
+	}
+
+	waClient := h.wa.GetClient(user)
+	if waClient.GetStatus() != whatsapp.StatusConnected {
+		return fiber.NewError(fiber.StatusBadRequest, "whatsapp not connected")
+	}
+
+	msg := "Ping! This is a test message."
+
+	if err := waClient.SendMessage(req.Phone, msg); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to send ping: "+err.Error())
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "ping sent successfully",
+		"phone":   req.Phone,
+	})
 }
 
 // ─── Broadcasts ─────────────────────────────────────────────────────────────
