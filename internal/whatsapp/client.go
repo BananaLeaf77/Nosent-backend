@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Nosent/whatsapp-broadcast/internal/models"
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
@@ -19,7 +20,6 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
-	"github.com/Nosent/whatsapp-broadcast/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -34,14 +34,14 @@ const (
 )
 
 type Client struct {
-	mu         sync.RWMutex
-	connectMu  sync.Mutex
-	waClient   *whatsmeow.Client
-	db         *gorm.DB
-	username   string
-	status     Status
-	qrChan     chan string
-	qrCode     string
+	mu        sync.RWMutex
+	connectMu sync.Mutex
+	waClient  *whatsmeow.Client
+	db        *gorm.DB
+	username  string
+	status    Status
+	qrChan    chan string
+	qrCode    string
 }
 
 func NewClient(db *gorm.DB, username string) *Client {
@@ -108,18 +108,20 @@ func (c *Client) Connect() error {
 					default:
 					}
 				case "success":
-					// handleEvent will set StatusConnected
+					c.mu.Lock()
+					c.qrCode = ""
+					c.mu.Unlock()
 				case "timeout":
 					c.setStatus(StatusDisconnected)
 				}
 			}
 		}()
 	} else {
+		// Don't set StatusConnected here — wait for *events.Connected event handler
 		if err := c.waClient.Connect(); err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
-		c.setStatus(StatusConnected)
-		c.persistSession()
+		// Status will be set to Connected by handleEvent when server confirms
 	}
 
 	return nil
@@ -132,7 +134,19 @@ func (c *Client) EnsureConnected() error {
 	if c.GetStatus() == StatusConnected || c.GetStatus() == StatusWaitingQR {
 		return nil
 	}
-	return c.Connect()
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	// For pre-paired devices, wait briefly for the *events.Connected handshake
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.GetStatus() == StatusConnected {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return nil
 }
 
 func (c *Client) GetQRCode() string {
