@@ -207,6 +207,9 @@ func (c *Client) persistSession() {
 
 // SendMessage sends a reliable WhatsApp message to a number like "6281234567890".
 func (c *Client) SendMessage(phone, message string) error {
+	fmt.Println("=======================================")
+	fmt.Println(phone)
+	fmt.Println("=======================================")
 	if c.GetStatus() != StatusConnected {
 		return fmt.Errorf("whatsapp not connected")
 	}
